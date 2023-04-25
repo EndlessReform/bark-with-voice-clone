@@ -19,14 +19,15 @@ from .model import GPTConfig, GPT
 from .model_fine import FineGPT, FineGPTConfig
 
 if (
-    torch.cuda.is_available() and
-    hasattr(torch.cuda, "amp") and
-    hasattr(torch.cuda.amp, "autocast") and
-    hasattr(torch.cuda, "is_bf16_supported") and
-    torch.cuda.is_bf16_supported()
+    torch.cuda.is_available()
+    and hasattr(torch.cuda, "amp")
+    and hasattr(torch.cuda.amp, "autocast")
+    and hasattr(torch.cuda, "is_bf16_supported")
+    and torch.cuda.is_bf16_supported()
 ):
     autocast = funcy.partial(torch.cuda.amp.autocast, dtype=torch.bfloat16)
 else:
+
     @contextlib.contextmanager
     def autocast():
         yield
@@ -92,10 +93,10 @@ REMOTE_MODEL_PATHS = {
 }
 
 
-if not hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
+if not hasattr(torch.nn.functional, "scaled_dot_product_attention"):
     logger.warning(
-        "torch version does not support flash attention. You will get significantly faster" +
-        " inference speed by upgrade torch to newest version / nightly."
+        "torch version does not support flash attention. You will get significantly faster"
+        + " inference speed by upgrade torch to newest version / nightly."
     )
 
 
@@ -200,10 +201,7 @@ def _load_model(ckpt_path, device, use_small=False, model_type="text"):
         raise NotImplementedError()
     model_key = f"{model_type}_small" if use_small or USE_SMALL_MODELS else model_type
     model_info = REMOTE_MODEL_PATHS[model_key]
-    if (
-        os.path.exists(ckpt_path) and
-        _md5(ckpt_path) != model_info["checksum"]
-    ):
+    if os.path.exists(ckpt_path) and _md5(ckpt_path) != model_info["checksum"]:
         logger.warning(f"found outdated {model_type} model, removing.")
         os.remove(ckpt_path)
     if not os.path.exists(ckpt_path):
@@ -340,6 +338,7 @@ SEMANTIC_INFER_TOKEN = 129_599
 
 def generate_text_semantic(
     text,
+    unconditional=False,
     history_prompt=None,
     temp=0.7,
     top_k=None,
@@ -350,12 +349,14 @@ def generate_text_semantic(
     max_gen_duration_s=None,
     allow_early_stop=True,
     model=None,
-    use_kv_caching=False
+    use_kv_caching=False,
 ):
     """Generate semantic tokens from text."""
-    assert isinstance(text, str)
-    text = _normalize_whitespace(text)
-    assert len(text.strip()) > 0
+    if not unconditional:
+        assert isinstance(text, str)
+        text = _normalize_whitespace(text)
+        assert len(text.strip()) > 0
+
     if history_prompt is not None:
         if history_prompt.endswith(".npz"):
             semantic_history = np.load(history_prompt)["semantic_prompt"]
@@ -401,7 +402,9 @@ def generate_text_semantic(
     else:
         semantic_history = np.array([SEMANTIC_PAD_TOKEN] * 256)
     x = torch.from_numpy(
-        np.hstack([encoded_text, semantic_history, np.array([SEMANTIC_INFER_TOKEN])]).astype(np.int64)
+        np.hstack([encoded_text, semantic_history, np.array([SEMANTIC_INFER_TOKEN])]).astype(
+            np.int64
+        )
     )[None]
     assert x.shape[1] == 256 + 256 + 1
     with _inference_mode():
@@ -418,7 +421,9 @@ def generate_text_semantic(
             else:
                 x_input = x
 
-            logits, kv_cache = model(x_input, merge_context=True, use_cache=use_kv_caching, past_kv=kv_cache)
+            logits, kv_cache = model(
+                x_input, merge_context=True, use_cache=use_kv_caching, past_kv=kv_cache
+            )
             relevant_logits = logits[0, 0, :SEMANTIC_VOCAB_SIZE]
             if allow_early_stop:
                 relevant_logits = torch.hstack(
@@ -495,7 +500,7 @@ def generate_coarse(
     max_coarse_history=630,  # min 60 (faster), max 630 (more context)
     sliding_window_len=60,
     model=None,
-    use_kv_caching=False
+    use_kv_caching=False,
 ):
     """Generate coarse audio codes from semantic tokens."""
     assert (
@@ -601,12 +606,8 @@ def generate_coarse(
                     x_input = x_in
 
                 logits, kv_cache = model(x_input, use_cache=use_kv_caching, past_kv=kv_cache)
-                logit_start_idx = (
-                    SEMANTIC_VOCAB_SIZE + (1 - int(is_major_step)) * CODEBOOK_SIZE
-                )
-                logit_end_idx = (
-                    SEMANTIC_VOCAB_SIZE + (2 - int(is_major_step)) * CODEBOOK_SIZE
-                )
+                logit_start_idx = SEMANTIC_VOCAB_SIZE + (1 - int(is_major_step)) * CODEBOOK_SIZE
+                logit_end_idx = SEMANTIC_VOCAB_SIZE + (2 - int(is_major_step)) * CODEBOOK_SIZE
                 relevant_logits = logits[0, 0, logit_start_idx:logit_end_idx]
                 if top_p is not None:
                     # faster to convert to numpy

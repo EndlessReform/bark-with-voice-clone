@@ -21,7 +21,7 @@ dependencies = [
     "numpy",
     "scipy",
     "tokenizers",
-    "torch",
+    "torch==2.0.0+cu118",
     "tqdm",
     "transformers",
 ]
