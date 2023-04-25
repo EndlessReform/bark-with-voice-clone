@@ -6,3 +6,4 @@ references
 
 *.wav
 _temp/
+datasets/**/*
