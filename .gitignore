@@ -7,3 +7,4 @@ references
 *.wav
 _temp/
 datasets/**/*
+models/**/*
