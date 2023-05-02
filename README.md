@@ -1,12 +1,43 @@
-# 🐶 Bark...but with the ability to use voice cloning on custom audio/text pairs
+# Bark fine-tuning experiment
 
-If you want to clone a voice just follow the `clone_voice.ipynb` notebook. If you want to generate audio from text, follow the `generate.ipynb` notebook.
+> 2023-05-01: So, er, hi everyone from the Serp.ai Discord! Didn't think anyone would actually find this repo until I was finished. Not sure how much help I'd be, but I'd love to contribute to the main fine-tuning effort!
 
-To create a voice clone sample, you need an audio/text pair of less than 7 seconds. (limited testing shows better results with shorter samples (2-4 seconds))
+> **warning**
+>
+> I'm a junior web dev with a grand total of four months of AI tutorials, so I could be totally "Bark"-ing up the wrong tree! Please don't hesitate to give suggestions, contribute, or correct me, that's what open source is for!
 
-Haven't experimented with what kind of audio/text pairs work best, but this will be updated as we find out more.
+This repo attempts to enable converting ground-truth audio to Bark semantic tokens (or their input embeddings). If successful, this will add the missing piece to Serp.ai's voice cloning fork, which solved coarse and fine token conversion, and enable full fine tuning - or at least get some of the way there. **My eventual goal is to merge this fork back into the main Serp.ai voice cloning fork**, if I ever get that far.
 
+## Why can't Bark be fine-tuned (yet)?
 
+Under the hood, Bark is essentially the AudioLM model (see [paper](https://arxiv.org/abs/2209.03143), [public GitHub replication](https://github.com/lucidrains/audiolm-pytorch)) + text conditioning. It's three GPTs stacked on top of each other. In AudioLM, just like GPT-3 generates text tokens from a prompt of text tokens, the first GPT takes a prompt of **semantic** tokens, which encode the _content_ of new audio and a bit of the speaker identity (that's `text_to_semantic` in Bark), and generates the "next tokens". Bark adds to this by adding a learned embedding of the text you want to generate. The second and third GPTs, the fine and coarse or `semantic_to_waveform` in Bark, in both Bark and AudioLM handle the **acoustic** tokens, which encode the finer details of the audio.
+
+![](https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEiX0MyO_IXk730mCbbJX7LXxBRIxJk2K41Y4leuEk4WQRjz0kgIp9CGHFwLePaKt3qEcCK8fvhAxjJ7J_sXH05q7xnsMbjZZFDDLPIlVyaKr3yYo77oT2KBqe9gw4MFuUZnUfxFprP67ExPzr2RNxduB0SruUGjJXghihHSoxvMtlG3YNtHHesZOJzY/s960/image2.png)
+
+So how do you turn real audio into token prompts for these models? Mercifully, the acoustic tokens are a predefined open-source format: lower and upper layers of Facebook's [Encodec](https://github.com/facebookresearch/encodec) neural compressed encoding for audio. Serp.ai's voice cloning fork successfully converts coarse and fine token prompts this way. Unfortunately, the audio to semantic token conversion requires Bark's proprietary model, which is only used during training and not at inference. Suno has repeatedly refused to open-source this model despite many community requests including from Serp.ai, in order to ~~make money by using an unconfigurable Bark as a giant advertisement for their future proprietary platform, which guards cloning behind a paid API~~ "prevent online harms and misinformation". Instead, Suno gives out their own predefined prompts. This approach is quite similar to how the Tortoise TTS developer "de-weaponized" it for the first year of its existence: see Sherman Chann's blog post [Why can't Tortoise be fine-tuned?](https://152334h.github.io/blog/tortoise-fine-tuning/) for a writeup.
+
+Serp.ai's voice cloning fork deals with this limitation by generating semantic tokens prompted only by text, but supplying the fine and coarse prompts from the ground-truth audio. Serp's approach gets pretty far; fine and coarse are enough to get major details like speaker gender and tone of voice pretty close. However, sadly this isn't enough to nail speaker identity. Check out the `notebooks/ablation.ipynb` notebook for an informal demonstration of how much difference semantic and acoustic prompts make to the output.
+
+## Reverse engineering the semantic token codebook
+
+Sherman Chann's blog post on Tortoise goes on to suggest "baseless speculation" on how to reverse-engineer the Tortoise codebook. By definition, the model outputs are the audio from the new semantic tokens, and mercifully, the length specified by the 50hz semantic tokens is the length of the audio. So we can generate a large, diverse dataset of voice lines and save the semantic tokens for them, then train a small model to map generated audio to source tokens. Chann never ended up having to do this, since the Tortoise author foolishly left the original semantic token encoder in a not-actually-deleted HuggingFace branch. Sadly, the Bark community isn't so lucky; we'll have to do it the hard way.
+
+The `notebooks/create_dataset` is a naive attempt to generate a dataset of synthetic audio to semantic tokens, in [Fairseq's](https://github.com/facebookresearch/fairseq) dataset format, so we can feed our generated audio easily into Fairseq's HuBERT implementation and get the sixth-layer embeddings. The key thing here is to generate as large and diverse a dataset as possible, but for prototyping purposes, I'm solely doing this for English using voice prompts from [Mozilla CommonVoice](https://commonvoice.mozilla.org/en/datasets) (NOT the actual audio). (As a side note, I would really appreciate someone getting the `validated.tsv` voice lines from other languages in CommonVoice, like Hindi; I don't want to download all that audio just to get the tsv and not use the audio at all).
+
+The original AudioLM paper creates the audio to semantic token mapping as follows:
+- Take an encoder transformer BERT-like model that encodes audio to embeddings (for tasks like speaker recognition). AudioLM and Google use the closed-source wav2vec-BERT, but the open-source AudioLM repo uses [HuBERT](https://huggingface.co/docs/transformers/model_doc/hubert).
+- Run a bunch of source audio through HuBERT and take the embeddings from the sixth layer. HuBERT runs at 50 embeddings / second of audio.
+- Run k-means clusters on the embeddings to essentially produce k "groups" of kinds of input audio. For example, AudioLM uses ~500, and in a [GitHub statement](https://github.com/lucidrains/audiolm-pytorch/discussions/170), the Bark devs say they use a similar approach but with 10k groups. In what I am sure is a complete coincidence, Bark semantic tokens are 49.9hz, roughly the same as HuBERT's 50hz.
+- When adding new audio, run k-means to find out "what group" the new audio is in.
+
+So can't we just do this semantic token codebook generation ourselves? No; as Chann points out, there's no guarantee that our own training process will generate the same groups. Instead, there are two different rather naive approaches I'm going to try:
+
+- Divide the generations by semantic token, find the means of the HuBERT embeddings of the generated audio that correspond to that token's position in the semantic prompt, and use them as starting centroids for a small K-means run. Then run normal K-means inference.
+- Similar to [Mini-GPT-4](https://arxiv.org/abs/2304.10592), simply train a linear projection from embeddings from frozen HuBERT to Bark's input embeddings for the semantic tokens, token by token. Leave Bark and HuBERT frozen. In my uneducated opinion this is less stupid than it sounds; since a simple linear projection was enough to map high-dimensional image embeddings to text input embeddings, surely mapping two kinds of 50hz audio representations can't be _that_ hard? (Knock on wood). Also, input embeddings aren't reliant on the tokens around them. 
+
+Other stuff that probably needs to be done later:
+- Add batch inference mode for Bark, to speed up dataset generation and enable use cases like mass audiobook conversion
+- Write an eval harness, so we can gauge performance better than training objective loss or "playing it by ear"
 
 -------------------------------------------------------------------
 # Original README.md
