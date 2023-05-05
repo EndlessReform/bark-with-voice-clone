@@ -6,7 +6,7 @@ To create a voice clone sample, you need an audio/text pair of less than 7 secon
 
 Haven't experimented with what kind of audio/text pairs work best, but this will be updated as we find out more.
 
-
+- [BARK text to speech @ SERP AI](https://serp.ai/tools/bark-text-to-speech-ai-voice-clone-app/)
 
 -------------------------------------------------------------------
 # Original README.md
