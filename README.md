@@ -2,7 +2,7 @@
 
 > 2023-05-01: So, er, hi everyone from the Serp.ai Discord! Didn't think anyone would actually find this repo until I was finished. Not sure how much help I'd be, but I'd love to contribute to the main fine-tuning effort!
 
-> **warning**
+> **Warning**
 >
 > I'm a junior web dev with a grand total of four months of AI tutorials, so I could be totally "Bark"-ing up the wrong tree! Please don't hesitate to give suggestions, contribute, or correct me, that's what open source is for!
 

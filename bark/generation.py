@@ -357,6 +357,11 @@ def generate_text_semantic(
         text = _normalize_whitespace(text)
         assert len(text.strip()) > 0
 
+    model_container = load_model(use_gpu=use_gpu, model_type="text")
+    if model is None:
+        model = model_container["model"]
+    tokenizer = model_container["tokenizer"]
+
     if history_prompt is not None:
         if history_prompt.endswith(".npz"):
             semantic_history = np.load(history_prompt)["semantic_prompt"]
@@ -364,24 +369,20 @@ def generate_text_semantic(
             semantic_history = np.load(
                 os.path.join(CUR_PATH, "assets", "prompts", f"{history_prompt}.npz")
             )["semantic_prompt"]
-        assert (
-            isinstance(semantic_history, np.ndarray)
-            and len(semantic_history.shape) == 1
-            and len(semantic_history) > 0
-            and semantic_history.min() >= 0
-            and semantic_history.max() <= SEMANTIC_VOCAB_SIZE - 1
-        )
+        semantic_history_dimensions = len(semantic_history.shape)
+        assert isinstance(semantic_history, np.ndarray) and semantic_history_dimensions in [1, 2]
+        if semantic_history_dimensions == 2:
+            assert semantic_history.shape[1] == model.config.n_embed
+        else:
+            assert len(semantic_history) > 0
     else:
         semantic_history = None
-    model_container = load_model(use_gpu=use_gpu, model_type="text")
-    if model is None:
-        model = model_container["model"]
-    tokenizer = model_container["tokenizer"]
+
     encoded_text = np.array(_tokenize(tokenizer, text)) + TEXT_ENCODING_OFFSET
     device = "cuda" if use_gpu and torch.cuda.device_count() > 0 else "cpu"
     if len(encoded_text) > 256:
         p = round((len(encoded_text) - 256) / len(encoded_text) * 100, 1)
-        logger.warning(f"warning, text too long, lopping of last {p}%")
+        logger.warning(f"warning, text too long, lopping off last {p}%")
         encoded_text = encoded_text[:256]
     encoded_text = np.pad(
         encoded_text,
@@ -390,15 +391,34 @@ def generate_text_semantic(
         mode="constant",
     )
     if semantic_history is not None:
-        semantic_history = semantic_history.astype(np.int64)
-        # lop off if history is too long, pad if needed
-        semantic_history = semantic_history[-256:]
-        semantic_history = np.pad(
-            semantic_history,
-            (0, 256 - len(semantic_history)),
-            constant_values=SEMANTIC_PAD_TOKEN,
-            mode="constant",
-        )
+        if semantic_history_dimensions == 1:
+            semantic_history = semantic_history.astype(np.int64)
+            # lop off if history is too long, pad if needed
+            semantic_history = semantic_history[-256:]
+            semantic_history = np.pad(
+                semantic_history,
+                (0, 256 - len(semantic_history)),
+                constant_values=SEMANTIC_PAD_TOKEN,
+                mode="constant",
+            )
+        else:
+            semantic_history = semantic_history[-256:, :]
+
+            padding_embedding = model.transformer.wte(
+                torch.from_numpy(np.array(SEMANTIC_PAD_TOKEN)).astype(np.int64)
+            ).unsqueeze(0)
+            emb_pad_length = 256 - embedded_context.shape[0]
+            padding_tensor = padding_embedding.repeat(emb_pad_length, 1)
+            embedded_context = torch.cat([embedded_context, padding_tensor], dim=0)
+
+            if embedded_context:
+                tok_emb = torch.cat(
+                    [
+                        self.transformer.wte(idx[:, :256]) + embedded_context,
+                        self.transformer.wte(idx[:, 256 + 256 :]),
+                    ],
+                    dim=1,
+                )
     else:
         semantic_history = np.array([SEMANTIC_PAD_TOKEN] * 256)
     x = torch.from_numpy(
