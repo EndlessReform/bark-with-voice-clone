@@ -6,5 +6,5 @@ references
 
 *.wav
 _temp/
-datasets/**/*
-models/**/*
+datasets/
+models/

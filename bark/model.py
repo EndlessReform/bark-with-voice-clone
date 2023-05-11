@@ -246,6 +246,7 @@ class GPT(nn.Module):
             assert position_ids.shape == (1, t)
 
         pos_emb = self.transformer.wpe(position_ids)  # position embeddings of shape (1, t, n_embd)
+        pos_emb = self.transformer.wpe(position_ids)  # position embeddings of shape (1, t, n_embd)
 
         x = self.transformer.drop(tok_emb + pos_emb)
 
