@@ -185,17 +185,29 @@ class GPT(nn.Module):
     def forward(
         self,
         idx,
-        embedded_context=None,
+        input_embeds=None,
         merge_context=False,
         past_kv=None,
         position_ids=None,
         use_cache=False,
     ):
-        device = idx.device
-        b, t = idx.size()
+        # Mixed embed and token input not supported
+        assert (idx is None) ^ (input_embeds is None)
+
+        device = idx.device if idx else input_embeds.device
+        if idx:
+            b, t = idx.size()
+        else:
+            b, t, d = input_embeds.size()
+
+        if input_embeds:
+            assert d == self.config.n_embed
+
         if past_kv is not None:
             assert t == 1
-            tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+            tok_emb = (
+                self.transformer.wte(idx) if idx else input_embeds
+            )  # token embeddings of shape (b, t, n_embd)
         else:
             if merge_context:
                 assert idx.shape[1] >= 256 + 256 + 1
@@ -205,16 +217,8 @@ class GPT(nn.Module):
                     t <= self.config.block_size
                 ), f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
-            if embedded_context:
-                assert len(embedded_context.shape) == 3
-                assert (
-                    embedded_context.shape[2] == self.n_embed
-                    and embedded_context.shape[1] <= self.config.block_size
-                )
-                # Assume caller handled the embedding already
-                tok_emb = embedded_context
             # forward the GPT model itself
-            elif merge_context:
+            if merge_context and idx:
                 tok_emb = torch.cat(
                     [
                         self.transformer.wte(idx[:, :256])
@@ -223,8 +227,10 @@ class GPT(nn.Module):
                     ],
                     dim=1,
                 )
-            else:
+            elif idx:
                 tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+            else:
+                tok_emb = input_embeds  # Assume the caller did the context merging already
 
         if past_kv is None:
             past_length = 0

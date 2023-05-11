@@ -369,12 +369,11 @@ def generate_text_semantic(
             semantic_history = np.load(
                 os.path.join(CUR_PATH, "assets", "prompts", f"{history_prompt}.npz")
             )["semantic_prompt"]
-        semantic_history_dimensions = len(semantic_history.shape)
-        assert isinstance(semantic_history, np.ndarray) and semantic_history_dimensions in [1, 2]
-        if semantic_history_dimensions == 2:
+        assert isinstance(semantic_history, np.ndarray) and semantic_history.shape[0] > 0
+        semantic_history_ndim = semantic_history.ndim
+        assert semantic_history_ndim in [1, 2]
+        if semantic_history_ndim == 2:
             assert semantic_history.shape[1] == model.config.n_embed
-        else:
-            assert len(semantic_history) > 0
     else:
         semantic_history = None
 
