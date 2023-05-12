@@ -379,16 +379,19 @@ def generate_text_semantic(
     use_kv_caching=False,
 ):
     """Generate semantic tokens from text."""
+    # load models if not yet exist
+    global models
+    global models_devices
+    if "text" not in models:
+        preload_models()
+    model_container = models["text"]
+    model = model_container["model"]
+    tokenizer = model_container["tokenizer"]
+
     if not unconditional:
         assert isinstance(text, str)
         text = _normalize_whitespace(text)
         assert len(text.strip()) > 0
-
-    model_container = load_model(use_gpu=use_gpu, model_type="text")
-    if model is None:
-        model = model_container["model"]
-    tokenizer = model_container["tokenizer"]
-
     if history_prompt is not None:
         if history_prompt.endswith(".npz"):
             semantic_history = np.load(history_prompt)["semantic_prompt"]
@@ -400,17 +403,9 @@ def generate_text_semantic(
         semantic_history_ndim = semantic_history.ndim
         assert semantic_history_ndim in [1, 2]
         if semantic_history_ndim == 2:
-            assert semantic_history.shape[1] == model.config.n_embed
+            assert semantic_history.shape[1] == model.config.n_embd
     else:
         semantic_history = None
-    # load models if not yet exist
-    global models
-    global models_devices
-    if "text" not in models:
-        preload_models()
-    model_container = models["text"]
-    model = model_container["model"]
-    tokenizer = model_container["tokenizer"]
     encoded_text = np.array(_tokenize(tokenizer, text)) + TEXT_ENCODING_OFFSET
     if OFFLOAD_CPU:
         model.to(models_devices["text"])
@@ -425,8 +420,8 @@ def generate_text_semantic(
         constant_values=TEXT_PAD_TOKEN,
         mode="constant",
     )
-    if semantic_history is not None:
-        if semantic_history_dimensions == 1:
+    if semantic_history_ndim == 1:
+        if semantic_history is not None:
             semantic_history = semantic_history.astype(np.int64)
             # lop off if history is too long, pad if needed
             semantic_history = semantic_history[-256:]
@@ -437,33 +432,35 @@ def generate_text_semantic(
                 mode="constant",
             )
         else:
-            semantic_history = semantic_history[-256:, :]
+            semantic_history = np.array([SEMANTIC_PAD_TOKEN] * 256)
 
-            padding_embedding = model.transformer.wte(
-                torch.from_numpy(np.array(SEMANTIC_PAD_TOKEN)).astype(np.int64)
-            ).unsqueeze(0)
-            emb_pad_length = 256 - embedded_context.shape[0]
-            padding_tensor = padding_embedding.repeat(emb_pad_length, 1)
-            embedded_context = torch.cat([embedded_context, padding_tensor], dim=0)
-
-            if embedded_context:
-                tok_emb = torch.cat(
-                    [
-                        self.transformer.wte(idx[:, :256]) + embedded_context,
-                        self.transformer.wte(idx[:, 256 + 256 :]),
-                    ],
-                    dim=1,
-                )
+        semantic_history = model.transformer.wte(semantic_history.astype(np.int64))
     else:
-        semantic_history = np.array([SEMANTIC_PAD_TOKEN] * 256)
-    x = torch.from_numpy(
-        np.hstack([encoded_text, semantic_history, np.array([SEMANTIC_INFER_TOKEN])]).astype(
-            np.int64
+        semantic_history = semantic_history[-256:, :]
+
+        padding_embedding = model.transformer.wte(
+            torch.from_numpy(np.array(SEMANTIC_PAD_TOKEN).astype(np.int64)).to(device)
+        ).unsqueeze(0)
+        emb_pad_length = 256 - semantic_history.shape[0]
+        padding_tensor = padding_embedding.repeat(emb_pad_length, 1).to(device)
+        semantic_history = torch.cat(
+            [torch.from_numpy(semantic_history).to(device), padding_tensor], dim=0
         )
-    )[None]
-    assert x.shape[1] == 256 + 256 + 1
+
+    encoded_text = torch.from_numpy(encoded_text.astype(np.int64)).to(device)
+    prompt_history = model.transformer.wte(encoded_text) + semantic_history
+    end_token = model.transformer.wte(
+        torch.from_numpy(np.array([SEMANTIC_INFER_TOKEN], dtype=np.int64)).to(device)
+    )
+
+    x = torch.cat(
+        [prompt_history, end_token],
+        dim=0,
+    ).unsqueeze(0)
+    assert x.shape[1] == 256 + 1
     with _inference_mode():
         x = x.to(device)
+        out = torch.empty((1, 0), dtype=torch.int64).to(device)
         n_tot_steps = 768
         # custom tqdm updates since we don't know when eos will occur
         pbar = tqdm.tqdm(disable=silent, total=100)
@@ -472,11 +469,11 @@ def generate_text_semantic(
         kv_cache = None
         for n in range(n_tot_steps):
             if use_kv_caching and kv_cache is not None:
-                x_input = x[:, [-1]]
+                x_input = x[:, [-1], :]
             else:
                 x_input = x
             logits, kv_cache = model(
-                x_input, merge_context=True, use_cache=use_kv_caching, past_kv=kv_cache
+                None, input_embeds=x_input, use_cache=use_kv_caching, past_kv=kv_cache
             )
             relevant_logits = logits[0, 0, :SEMANTIC_VOCAB_SIZE]
             if allow_early_stop:
@@ -515,7 +512,8 @@ def generate_text_semantic(
                 # eos found, so break
                 pbar.update(100 - pbar_state)
                 break
-            x = torch.cat((x, item_next[None]), dim=1)
+            out = torch.cat((out, item_next[None]), dim=1)
+            x = torch.cat((x, model.transformer.wte(item_next[None])), dim=1)
             tot_generated_duration_s += 1 / SEMANTIC_RATE_HZ
             if max_gen_duration_s is not None and tot_generated_duration_s > max_gen_duration_s:
                 pbar.update(100 - pbar_state)
@@ -529,7 +527,7 @@ def generate_text_semantic(
                 pbar.update(req_pbar_state - pbar_state)
             pbar_state = req_pbar_state
         pbar.close()
-        out = x.detach().cpu().numpy().squeeze()[256 + 256 + 1 :]
+        out = out.detach().cpu().numpy().squeeze()
     if OFFLOAD_CPU:
         model.to("cpu")
     assert all(0 <= out) and all(out < SEMANTIC_VOCAB_SIZE)

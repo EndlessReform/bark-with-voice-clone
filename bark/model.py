@@ -10,8 +10,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from generation import SEMANTIC_PAD_TOKEN
-
 
 class LayerNorm(nn.Module):
     """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
@@ -192,7 +190,9 @@ class GPT(nn.Module):
         use_cache=False,
     ):
         # Mixed embed and token input not supported
-        assert (idx is None) ^ (input_embeds is None)
+        assert (idx is None) ^ (
+            input_embeds is None
+        ), "Either use embedded or tokenized input, not both"
 
         device = idx.device if idx else input_embeds.device
         if idx:
@@ -200,11 +200,13 @@ class GPT(nn.Module):
         else:
             b, t, d = input_embeds.size()
 
-        if input_embeds:
-            assert d == self.config.n_embed
+        if input_embeds is not None:
+            assert (
+                d == self.config.n_embd
+            ), f"Embeds are the wrong dimension: Expected {self.config.n_embd}, got {d}"
 
         if past_kv is not None:
-            assert t == 1
+            assert t == 1, f"KV caching but t is {t} not 1!"
             tok_emb = (
                 self.transformer.wte(idx) if idx else input_embeds
             )  # token embeddings of shape (b, t, n_embd)
@@ -245,7 +247,6 @@ class GPT(nn.Module):
             position_ids = position_ids.unsqueeze(0)  # shape (1, t)
             assert position_ids.shape == (1, t)
 
-        pos_emb = self.transformer.wpe(position_ids)  # position embeddings of shape (1, t, n_embd)
         pos_emb = self.transformer.wpe(position_ids)  # position embeddings of shape (1, t, n_embd)
 
         x = self.transformer.drop(tok_emb + pos_emb)
