@@ -19,14 +19,15 @@ from .model import GPTConfig, GPT
 from .model_fine import FineGPT, FineGPTConfig
 
 if (
-    torch.cuda.is_available() and
-    hasattr(torch.cuda, "amp") and
-    hasattr(torch.cuda.amp, "autocast") and
-    hasattr(torch.cuda, "is_bf16_supported") and
-    torch.cuda.is_bf16_supported()
+    torch.cuda.is_available()
+    and hasattr(torch.cuda, "amp")
+    and hasattr(torch.cuda.amp, "autocast")
+    and hasattr(torch.cuda, "is_bf16_supported")
+    and torch.cuda.is_bf16_supported()
 ):
     autocast = funcy.partial(torch.cuda.amp.autocast, dtype=torch.bfloat16)
 else:
+
     @contextlib.contextmanager
     def autocast():
         yield
@@ -102,10 +103,10 @@ REMOTE_MODEL_PATHS = {
 }
 
 
-if not hasattr(torch.nn.functional, 'scaled_dot_product_attention') and torch.cuda.is_available():
+if not hasattr(torch.nn.functional, "scaled_dot_product_attention") and torch.cuda.is_available():
     logger.warning(
-        "torch version does not support flash attention. You will get faster" +
-        " inference speed by upgrade torch to newest nightly version."
+        "torch version does not support flash attention. You will get faster"
+        + " inference speed by upgrade torch to newest nightly version."
     )
 
 
@@ -143,10 +144,11 @@ def _grab_best_device(use_gpu=True):
 
 def _download(from_hf_path, file_name, to_local_path):
     to_local_path = to_local_path.replace("\\", "/")
-    path = '/'.join(to_local_path.split("/")[:-1])
+    path = "/".join(to_local_path.split("/")[:-1])
     os.makedirs(path, exist_ok=True)
     hf_hub_download(repo_id=from_hf_path, filename=file_name, local_dir=path)
     os.replace(os.path.join(path, file_name), to_local_path)
+
 
 class InferenceContext:
     def __init__(self, benchmark=False):
@@ -203,10 +205,7 @@ def _load_model(ckpt_path, device, use_small=False, model_type="text"):
         raise NotImplementedError()
     model_key = f"{model_type}_small" if use_small or USE_SMALL_MODELS else model_type
     model_info = REMOTE_MODEL_PATHS[model_key]
-    if (
-        os.path.exists(ckpt_path) and
-        _md5(ckpt_path) != model_info["checksum"]
-    ):
+    if os.path.exists(ckpt_path) and _md5(ckpt_path) != model_info["checksum"]:
         logger.warning(f"found outdated {model_type} model, removing.")
         os.remove(ckpt_path)
     if not os.path.exists(ckpt_path):
@@ -320,7 +319,11 @@ def preload_models(
     ):
         logger.warning("No GPU being used. Careful, inference might be very slow!")
     _ = load_model(
-        model_type="text", use_gpu=text_use_gpu, use_small=text_use_small, force_reload=force_reload, path=path
+        model_type="text",
+        use_gpu=text_use_gpu,
+        use_small=text_use_small,
+        force_reload=force_reload,
+        path=path,
     )
     _ = load_model(
         model_type="coarse",
@@ -330,7 +333,11 @@ def preload_models(
         path=path,
     )
     _ = load_model(
-        model_type="fine", use_gpu=fine_use_gpu, use_small=fine_use_small, force_reload=force_reload, path=path
+        model_type="fine",
+        use_gpu=fine_use_gpu,
+        use_small=fine_use_small,
+        force_reload=force_reload,
+        path=path,
     )
     _ = load_codec_model(use_gpu=codec_use_gpu, force_reload=force_reload)
 
@@ -360,6 +367,7 @@ SEMANTIC_INFER_TOKEN = 129_599
 
 def generate_text_semantic(
     text,
+    unconditional=False,
     history_prompt=None,
     temp=0.7,
     top_k=None,
@@ -371,25 +379,6 @@ def generate_text_semantic(
     use_kv_caching=False,
 ):
     """Generate semantic tokens from text."""
-    assert isinstance(text, str)
-    text = _normalize_whitespace(text)
-    assert len(text.strip()) > 0
-    if history_prompt is not None:
-        if history_prompt.endswith(".npz"):
-            semantic_history = np.load(history_prompt)["semantic_prompt"]
-        else:
-            semantic_history = np.load(
-                os.path.join(CUR_PATH, "assets", "prompts", f"{history_prompt}.npz")
-            )["semantic_prompt"]
-        assert (
-            isinstance(semantic_history, np.ndarray)
-            and len(semantic_history.shape) == 1
-            and len(semantic_history) > 0
-            and semantic_history.min() >= 0
-            and semantic_history.max() <= SEMANTIC_VOCAB_SIZE - 1
-        )
-    else:
-        semantic_history = None
     # load models if not yet exist
     global models
     global models_devices
@@ -398,13 +387,32 @@ def generate_text_semantic(
     model_container = models["text"]
     model = model_container["model"]
     tokenizer = model_container["tokenizer"]
+
+    if not unconditional:
+        assert isinstance(text, str)
+        text = _normalize_whitespace(text)
+        assert len(text.strip()) > 0
+    if history_prompt is not None:
+        if history_prompt.endswith(".npz"):
+            semantic_history = np.load(history_prompt)["semantic_prompt"]
+        else:
+            semantic_history = np.load(
+                os.path.join(CUR_PATH, "assets", "prompts", f"{history_prompt}.npz")
+            )["semantic_prompt"]
+        assert isinstance(semantic_history, np.ndarray) and semantic_history.shape[0] > 0
+        semantic_history_ndim = semantic_history.ndim
+        assert semantic_history_ndim in [1, 2]
+        if semantic_history_ndim == 2:
+            assert semantic_history.shape[1] == model.config.n_embd
+    else:
+        semantic_history = None
     encoded_text = np.array(_tokenize(tokenizer, text)) + TEXT_ENCODING_OFFSET
     if OFFLOAD_CPU:
         model.to(models_devices["text"])
     device = next(model.parameters()).device
     if len(encoded_text) > 256:
         p = round((len(encoded_text) - 256) / len(encoded_text) * 100, 1)
-        logger.warning(f"warning, text too long, lopping of last {p}%")
+        logger.warning(f"warning, text too long, lopping off last {p}%")
         encoded_text = encoded_text[:256]
     encoded_text = np.pad(
         encoded_text,
@@ -412,26 +420,47 @@ def generate_text_semantic(
         constant_values=TEXT_PAD_TOKEN,
         mode="constant",
     )
-    if semantic_history is not None:
-        semantic_history = semantic_history.astype(np.int64)
-        # lop off if history is too long, pad if needed
-        semantic_history = semantic_history[-256:]
-        semantic_history = np.pad(
-            semantic_history,
-            (0, 256 - len(semantic_history)),
-            constant_values=SEMANTIC_PAD_TOKEN,
-            mode="constant",
+    if history_prompt is not None and semantic_history_ndim == 2:
+        semantic_history = semantic_history[-256:, :]
+
+        padding_embedding = model.transformer.wte(
+            torch.from_numpy(np.array(SEMANTIC_PAD_TOKEN).astype(np.int64)).to(device)
+        ).unsqueeze(0)
+        emb_pad_length = 256 - semantic_history.shape[0]
+        padding_tensor = padding_embedding.repeat(emb_pad_length, 1).to(device)
+        semantic_history = torch.cat(
+            [torch.from_numpy(semantic_history).to(device), padding_tensor], dim=0
         )
     else:
-        semantic_history = np.array([SEMANTIC_PAD_TOKEN] * 256)
-    x = torch.from_numpy(
-        np.hstack([
-            encoded_text, semantic_history, np.array([SEMANTIC_INFER_TOKEN])
-        ]).astype(np.int64)
-    )[None]
-    assert x.shape[1] == 256 + 256 + 1
+        if semantic_history is not None:
+            semantic_history = semantic_history.astype(np.int64)
+            # lop off if history is too long, pad if needed
+            semantic_history = semantic_history[-256:]
+            semantic_history = np.pad(
+                semantic_history,
+                (0, 256 - len(semantic_history)),
+                constant_values=SEMANTIC_PAD_TOKEN,
+                mode="constant",
+            )
+        else:
+            semantic_history = np.array([SEMANTIC_PAD_TOKEN] * 256)
+
+        semantic_history = model.transformer.wte(torch.from_numpy(semantic_history.astype(np.int64)).to(device))
+
+    encoded_text = torch.from_numpy(encoded_text.astype(np.int64)).to(device)
+    prompt_history = model.transformer.wte(encoded_text) + semantic_history
+    end_token = model.transformer.wte(
+        torch.from_numpy(np.array([SEMANTIC_INFER_TOKEN], dtype=np.int64)).to(device)
+    )
+
+    x = torch.cat(
+        [prompt_history, end_token],
+        dim=0,
+    ).unsqueeze(0)
+    assert x.shape[1] == 256 + 1
     with _inference_mode():
         x = x.to(device)
+        out = torch.empty((1, 0), dtype=torch.int64).to(device)
         n_tot_steps = 768
         # custom tqdm updates since we don't know when eos will occur
         pbar = tqdm.tqdm(disable=silent, total=100)
@@ -440,11 +469,11 @@ def generate_text_semantic(
         kv_cache = None
         for n in range(n_tot_steps):
             if use_kv_caching and kv_cache is not None:
-                x_input = x[:, [-1]]
+                x_input = x[:, [-1], :]
             else:
                 x_input = x
             logits, kv_cache = model(
-                x_input, merge_context=True, use_cache=use_kv_caching, past_kv=kv_cache
+                None, input_embeds=x_input, use_cache=use_kv_caching, past_kv=kv_cache
             )
             relevant_logits = logits[0, 0, :SEMANTIC_VOCAB_SIZE]
             if allow_early_stop:
@@ -483,7 +512,8 @@ def generate_text_semantic(
                 # eos found, so break
                 pbar.update(100 - pbar_state)
                 break
-            x = torch.cat((x, item_next[None]), dim=1)
+            out = torch.cat((out, item_next[None]), dim=1)
+            x = torch.cat((x, model.transformer.wte(item_next[None])), dim=1)
             tot_generated_duration_s += 1 / SEMANTIC_RATE_HZ
             if max_gen_duration_s is not None and tot_generated_duration_s > max_gen_duration_s:
                 pbar.update(100 - pbar_state)
@@ -497,7 +527,7 @@ def generate_text_semantic(
                 pbar.update(req_pbar_state - pbar_state)
             pbar_state = req_pbar_state
         pbar.close()
-        out = x.detach().cpu().numpy().squeeze()[256 + 256 + 1 :]
+        out = out.detach().cpu().numpy().squeeze()
     if OFFLOAD_CPU:
         model.to("cpu")
     assert all(0 <= out) and all(out < SEMANTIC_VOCAB_SIZE)
@@ -551,13 +581,15 @@ def generate_coarse(
             )
         x_semantic_history = x_history["semantic_prompt"]
         x_coarse_history = x_history["coarse_prompt"]
+        x_semantic_history_n_entries = x_semantic_history.shape[0]
         assert (
             isinstance(x_semantic_history, np.ndarray)
-            and len(x_semantic_history.shape) == 1
-            and len(x_semantic_history) > 0
-            and x_semantic_history.min() >= 0
-            and x_semantic_history.max() <= SEMANTIC_VOCAB_SIZE - 1
-            and isinstance(x_coarse_history, np.ndarray)
+            and len(x_semantic_history.shape) in [1, 2]
+            and x_semantic_history.shape[0] > 0
+        )
+
+        assert (
+            isinstance(x_coarse_history, np.ndarray)
             and len(x_coarse_history.shape) == 2
             and x_coarse_history.shape[0] == N_COARSE_CODEBOOKS
             and x_coarse_history.shape[-1] >= 0
@@ -573,17 +605,18 @@ def generate_coarse(
         n_semantic_hist_provided = np.min(
             [
                 max_semantic_history,
-                len(x_semantic_history) - len(x_semantic_history) % 2,
+                x_semantic_history_n_entries - x_semantic_history_n_entries % 2,
                 int(np.floor(len(x_coarse_history) / semantic_to_coarse_ratio)),
             ]
         )
         n_coarse_hist_provided = int(round(n_semantic_hist_provided * semantic_to_coarse_ratio))
-        x_semantic_history = x_semantic_history[-n_semantic_hist_provided:].astype(np.int32)
+        x_semantic_history = x_semantic_history[-n_semantic_hist_provided:, ...].astype(np.int32)
         x_coarse_history = x_coarse_history[-n_coarse_hist_provided:].astype(np.int32)
         # TODO: bit of a hack for time alignment (sounds better)
         x_coarse_history = x_coarse_history[:-2]
     else:
         x_semantic_history = np.array([], dtype=np.int32)
+        x_semantic_history_n_entries = x_semantic_history.shape[0]
         x_coarse_history = np.array([], dtype=np.int32)
     # load models if not yet exist
     global models
@@ -602,30 +635,44 @@ def generate_coarse(
         )
     )
     assert n_steps > 0 and n_steps % N_COARSE_CODEBOOKS == 0
-    x_semantic = np.hstack([x_semantic_history, x_semantic]).astype(np.int32)
-    x_coarse = x_coarse_history.astype(np.int32)
-    base_semantic_idx = len(x_semantic_history)
+    # pre-embed!
+    x_semantic = model.transformer.wte(torch.tensor(x_semantic).to(device))
+    x_semantic_history = torch.tensor(x_semantic_history).to(device)
+    if x_semantic_history.ndim == 1:
+        x_semantic_history = model.transformer.wte(x_semantic_history)
+    x_semantic = torch.cat((x_semantic_history, x_semantic))
+    x_coarse = torch.from_numpy(x_coarse_history.astype(np.int32)).to(device)
+    x_coarse = model.transformer.wte(x_coarse)
+    base_semantic_idx = x_semantic_history_n_entries
     with _inference_mode():
-        x_semantic_in = torch.from_numpy(x_semantic)[None].to(device)
-        x_coarse_in = torch.from_numpy(x_coarse)[None].to(device)
+        # x_semantic_in = torch.from_numpy(x_semantic)[None].to(device)
+        x_semantic_in = x_semantic[None]
+        x_coarse_in = x_coarse[None]
         n_window_steps = int(np.ceil(n_steps / sliding_window_len))
+        out = torch.empty((1, 0), dtype=torch.int64).to(device)
         n_step = 0
         for _ in tqdm.tqdm(range(n_window_steps), total=n_window_steps, disable=silent):
             semantic_idx = base_semantic_idx + int(round(n_step / semantic_to_coarse_ratio))
             # pad from right side
-            x_in = x_semantic_in[:, np.max([0, semantic_idx - max_semantic_history]) :]
-            x_in = x_in[:, :256]
-            x_in = F.pad(
-                x_in,
-                (0, 256 - x_in.shape[-1]),
-                "constant",
-                COARSE_SEMANTIC_PAD_TOKEN,
-            )
+            x_in = x_semantic_in[:, max([0, semantic_idx - max_semantic_history]) :, :]
+            x_in = x_in[:, :256, :]
+            semantic_pad = model.transformer.wte(torch.tensor([COARSE_SEMANTIC_PAD_TOKEN]).to(device))
+            # Calculate the padding size
+            padding_size = 256 - x_in.shape[1]
+
+            if padding_size > 0:
+                # Create a tensor filled with the semantic_pad tensor
+                pad_tensor = semantic_pad.repeat(1, padding_size, 1)
+
+                # Concatenate the pad_tensor along the second axis
+                x_in = torch.cat((x_in, pad_tensor), dim=1)
+
+            infer_embed = model.transformer.wte(torch.tensor([COARSE_INFER_TOKEN]).to(device))[None]
             x_in = torch.hstack(
                 [
                     x_in,
-                    torch.tensor([COARSE_INFER_TOKEN])[None].to(device),
-                    x_coarse_in[:, -max_coarse_history:],
+                    infer_embed,
+                    x_coarse_in[:, -max_coarse_history:, :],
                 ]
             )
             kv_cache = None
@@ -635,17 +682,15 @@ def generate_coarse(
                 is_major_step = n_step % N_COARSE_CODEBOOKS == 0
 
                 if use_kv_caching and kv_cache is not None:
-                    x_input = x_in[:, [-1]]
+                    x_input = x_in[:, [-1], :]
                 else:
                     x_input = x_in
 
-                logits, kv_cache = model(x_input, use_cache=use_kv_caching, past_kv=kv_cache)
-                logit_start_idx = (
-                    SEMANTIC_VOCAB_SIZE + (1 - int(is_major_step)) * CODEBOOK_SIZE
+                logits, kv_cache = model(
+                    None, input_embeds=x_input, use_cache=use_kv_caching, past_kv=kv_cache
                 )
-                logit_end_idx = (
-                    SEMANTIC_VOCAB_SIZE + (2 - int(is_major_step)) * CODEBOOK_SIZE
-                )
+                logit_start_idx = SEMANTIC_VOCAB_SIZE + (1 - int(is_major_step)) * CODEBOOK_SIZE
+                logit_end_idx = SEMANTIC_VOCAB_SIZE + (2 - int(is_major_step)) * CODEBOOK_SIZE
                 relevant_logits = logits[0, 0, logit_start_idx:logit_end_idx]
                 if top_p is not None:
                     # faster to convert to numpy
@@ -673,16 +718,20 @@ def generate_coarse(
                 probs = probs.to(inf_device)
                 item_next = item_next.to(inf_device)
                 item_next += logit_start_idx
-                x_coarse_in = torch.cat((x_coarse_in, item_next[None]), dim=1)
-                x_in = torch.cat((x_in, item_next[None]), dim=1)
-                del logits, relevant_logits, probs, item_next
+                out = torch.cat((out, item_next[None]), dim=1)
+                item_next_emb = model.transformer.wte(item_next)
+                x_coarse_in = torch.cat((x_coarse_in, item_next_emb[None]), dim=1)
+                x_in = torch.cat((x_in, item_next_emb[None]), dim=1)
+                del logits, relevant_logits, probs, item_next, item_next_emb
                 n_step += 1
             del x_in
         del x_semantic_in
+        print(n_step)
     if OFFLOAD_CPU:
         model.to("cpu")
-    gen_coarse_arr = x_coarse_in.detach().cpu().numpy().squeeze()[len(x_coarse_history) :]
-    del x_coarse_in
+    gen_coarse_arr = out.detach().cpu().numpy().squeeze()
+    del out, x_coarse_in
+    print(f"Generated coarse tokens: {len(gen_coarse_arr)}, predicted: {n_steps}")
     assert len(gen_coarse_arr) == n_steps
     gen_coarse_audio_arr = gen_coarse_arr.reshape(-1, N_COARSE_CODEBOOKS).T - SEMANTIC_VOCAB_SIZE
     for n in range(1, N_COARSE_CODEBOOKS):
