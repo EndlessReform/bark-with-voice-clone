@@ -1,12 +1,14 @@
 # Bark fine-tuning experiment
 
-> 2023-05-01: So, er, hi everyone from the Serp.ai Discord! Didn't think anyone would actually find this repo until I was finished. Not sure how much help I'd be, but I'd love to contribute to the main fine-tuning effort!
+> **Status report, 2023-05-16**: Still in the prototyping phase with the [Serp.ai](https://serp.ai/) team. Bark now takes embedded semantic history for generation, and we have prototyping code for creating a  synthetic dataset of audio to token mappings. There's boilerplate for training a simple projection with MSE loss between spaces, to test E2E, but unsurprisingly it didn't work on the first try. Over the next few weeks I'll be working on the actual training: (a) hyperparameter tuning, (b) using a larger HuBERT model for embeddings, (c) making the training objective more sophisticated. Contributions and feedback welcome! Join us at the [SERP Discord](https://serp.ly/@serpai/discord).
 
 > **Warning**
 >
 > I'm a junior web dev with a grand total of four months of AI tutorials, so I could be totally "Bark"-ing up the wrong tree! Please don't hesitate to give suggestions, contribute, or correct me, that's what open source is for!
 
 This repo attempts to enable converting ground-truth audio to Bark semantic tokens (or their input embeddings). If successful, this will add the missing piece to Serp.ai's voice cloning fork, which solved coarse and fine token conversion, and enable full fine tuning - or at least get some of the way there. **My eventual goal is to merge this fork back into the main Serp.ai voice cloning fork**, if I ever get that far.
+
+For progress, please see CHANGELOG.md
 
 ## Why can't Bark be fine-tuned (yet)?
 
@@ -30,10 +32,7 @@ The original AudioLM paper creates the audio to semantic token mapping as follow
 - Run k-means clusters on the embeddings to essentially produce k "groups" of kinds of input audio. For example, AudioLM uses ~500, and in a [GitHub statement](https://github.com/lucidrains/audiolm-pytorch/discussions/170), the Bark devs say they use a similar approach but with 10k groups. In what I am sure is a complete coincidence, Bark semantic tokens are 49.9hz, roughly the same as HuBERT's 50hz.
 - When adding new audio, run k-means to find out "what group" the new audio is in.
 
-So can't we just do this semantic token codebook generation ourselves? No; as Chann points out, there's no guarantee that our own training process will generate the same groups. Instead, there are two different rather naive approaches I'm going to try:
-
-- Divide the generations by semantic token, find the means of the HuBERT embeddings of the generated audio that correspond to that token's position in the semantic prompt, and use them as starting centroids for a small K-means run. Then run normal K-means inference.
-- Similar to [Mini-GPT-4](https://arxiv.org/abs/2304.10592), simply train a linear projection from embeddings from frozen HuBERT to Bark's input embeddings for the semantic tokens, token by token. Leave Bark and HuBERT frozen. In my uneducated opinion this is less stupid than it sounds; since a simple linear projection was enough to map high-dimensional image embeddings to text input embeddings, surely mapping two kinds of 50hz audio representations can't be _that_ hard? (Knock on wood). Also, input embeddings aren't reliant on the tokens around them. 
+So can't we just do this semantic token codebook generation ourselves? No; as Chann points out, there's no guarantee that our own training process will generate the same groups. Instead, similar to [Mini-GPT-4](https://arxiv.org/abs/2304.10592), we're training a linear projection from embeddings from frozen HuBERT to Bark's input embeddings for the semantic tokens, and enabling generation from embedded semantic history.
 
 Other stuff that probably needs to be done later:
 - Add batch inference mode for Bark, to speed up dataset generation and enable use cases like mass audiobook conversion
